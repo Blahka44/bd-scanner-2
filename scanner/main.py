@@ -1,6 +1,7 @@
 """
 Crypto BD Lead Scanner — Core Intelligence Engine
 Author: @justinbizdev
+Optimized for CoinGecko Public Tier Rate Limits
 """
 
 import os
@@ -8,6 +9,7 @@ import json
 import time
 import logging
 import requests
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,7 +23,7 @@ log = logging.getLogger(__name__)
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # optional Pro key
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Optional Key
 
 HEADERS = {"x-cg-demo-api-key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
 
@@ -99,7 +101,8 @@ def fetch_coin_page(page: int, per_page: int = 100) -> list:
 def fetch_coin_detail(coin_id: str) -> Optional[dict]:
     """Fetch exchange count and social data for a specific coin."""
     try:
-        time.sleep(1.2)  # respect rate limits
+        # Respect rate limits between detailed single asset calls
+        time.sleep(1.5)  
         r = requests.get(
             f"{COINGECKO_BASE}/coins/{coin_id}",
             params={
@@ -146,7 +149,6 @@ def score_volume_decay(volume_24h: float, market_cap: float) -> float:
     if ratio <= 0.05:
         return 100.0
     # Logarithmic decay scoring
-    import math
     return min(100.0, (1 - math.log(ratio / 0.05) / math.log(100)) * 100)
 
 
@@ -307,224 +309,4 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
     community = (detail or {}).get("community_data", {}) or {}
     twitter_url = (detail or {}).get("links", {}).get("twitter_screen_name", "")
     telegram_handle = (detail or {}).get("links", {}).get("telegram_channel_identifier", "")
-    website = ((detail or {}).get("links", {}).get("homepage") or [""])[0]
-
-    return {
-        "id": coin["id"],
-        "name": coin["name"],
-        "symbol": coin["symbol"].upper(),
-        "rank": coin.get("market_cap_rank"),
-        "price_usd": coin.get("current_price"),
-        "change_7d": change_7d,
-        "change_30d": change_30d,
-        "volume_24h": volume_24h,
-        "market_cap": market_cap,
-        "exchange_count": exchange_count,
-        "composite_score": round(composite, 1),
-        "scores": {
-            "price_distress": round(price_s, 1),
-            "volume_decay": round(volume_s, 1),
-            "exchange_count": round(exchange_s, 1),
-            "social_activity": round(social_s, 1),
-            "treasury_risk": round(treasury_s, 1),
-        },
-        "distress_flags": distress_flags,
-        "primary_service": opportunity["primary_service"],
-        "outreach_angle": opportunity["angle"],
-        "twitter": f"@{twitter_url}" if twitter_url else None,
-        "telegram": f"t.me/{telegram_handle}" if telegram_handle else None,
-        "website": website or None,
-        "twitter_followers": community.get("twitter_followers"),
-        "benchmark_30d": round(benchmark_30d, 2),
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-# ─── TELEGRAM ALERT ──────────────────────────────────────────────────────────
-
-def format_alert(lead: dict) -> str:
-    score = lead["composite_score"]
-    urgency_bar = "🔴" if score >= 75 else "🟠" if score >= 60 else "🟡"
-    flags_str = "\n".join(f"  ⚠️ {f}" for f in lead["distress_flags"])
-
-    score_breakdown = (
-        f"  Price Distress:  {lead['scores']['price_distress']:.0f}/100\n"
-        f"  Volume Decay:    {lead['scores']['volume_decay']:.0f}/100\n"
-        f"  Exchange Gap:    {lead['scores']['exchange_count']:.0f}/100\n"
-        f"  Social Active:   {lead['scores']['social_activity']:.0f}/100\n"
-        f"  Treasury Risk:   {lead['scores']['treasury_risk']:.0f}/100"
-    )
-
-    contacts = []
-    if lead.get("twitter"):
-        contacts.append(f"X: {lead['twitter']}")
-    if lead.get("telegram"):
-        contacts.append(f"TG: {lead['telegram']}")
-    if lead.get("website"):
-        contacts.append(f"Web: {lead['website']}")
-    contacts_str = " | ".join(contacts) if contacts else "Not found"
-
-    volume_fmt = f"${lead['volume_24h']:,.0f}"
-    mc_fmt = f"${lead['market_cap']:,.0f}"
-
-    return f"""
-{urgency_bar} *NEW BD LEAD* — Confidence {score:.0f}/100
-
-*{lead['name']} (${lead['symbol']})*
-Rank #{lead['rank']} on CoinGecko
-
-📉 *Distress Signals:*
-{flags_str}
-
-📊 *Metrics:*
-  Vol 24h:   {volume_fmt}
-  Mkt Cap:   {mc_fmt}
-  7d Change: {lead['change_7d']:+.1f}%
-  30d Change:{lead['change_30d']:+.1f}%
-  Exchanges: {lead['exchange_count']}
-  Market 30d:{lead['benchmark_30d']:+.1f}% (benchmark)
-
-🎯 *Primary Opportunity:* {lead['primary_service']}
-💬 *Outreach Angle:*
-_{lead['outreach_angle']}_
-
-📡 *Score Breakdown:*
-{score_breakdown}
-
-🔗 *Contact Points:*
-{contacts_str}
-
-🕐 _{lead['scanned_at'][:16].replace('T',' ')} UTC_
-""".strip()
-
-
-def send_telegram_alert(lead: dict) -> bool:
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("Telegram credentials not set — printing to console")
-        print(format_alert(lead))
-        return True
-    try:
-        msg = format_alert(lead)
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": msg,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        log.error(f"Telegram send failed: {e}")
-        return False
-
-
-def send_summary_alert(leads: list[dict]) -> None:
-    """Send a daily digest summary if multiple leads found."""
-    if not leads:
-        return
-    lines = [f"📋 *DAILY SCAN SUMMARY — {len(leads)} leads found*\n"]
-    for i, lead in enumerate(leads[:10], 1):
-        score = lead["composite_score"]
-        icon = "🔴" if score >= 75 else "🟠" if score >= 60 else "🟡"
-        lines.append(
-            f"{i}. {icon} *{lead['name']}* (${lead['symbol']}) — "
-            f"Score: {score:.0f} | {lead['primary_service']}"
-        )
-    msg = "\n".join(lines)
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
-            timeout=10,
-        )
-    except Exception as e:
-        log.error(f"Summary send failed: {e}")
-
-
-# ─── DEDUPLICATION ───────────────────────────────────────────────────────────
-
-def load_seen_ids() -> set:
-    path = "data/seen_leads.json"
-    if os.path.exists(path):
-        with open(path) as f:
-            return set(json.load(f))
-    return set()
-
-
-def save_seen_ids(seen: set) -> None:
-    os.makedirs("data", exist_ok=True)
-    with open("data/seen_leads.json", "w") as f:
-        json.dump(list(seen), f)
-
-
-def save_leads_log(leads: list[dict]) -> None:
-    os.makedirs("data", exist_ok=True)
-    path = f"data/leads_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.json"
-    with open(path, "w") as f:
-        json.dump(leads, f, indent=2)
-    log.info(f"Saved {len(leads)} leads to {path}")
-
-
-# ─── MAIN SCAN LOOP ──────────────────────────────────────────────────────────
-
-def run_scan(pages: int = 5, send_individual_alerts: bool = True):
-    log.info("=== Crypto BD Lead Scanner starting ===")
-
-    benchmark = get_market_benchmark()
-    seen_ids = load_seen_ids()
-    new_leads = []
-    total_scanned = 0
-
-    for page in range(1, pages + 1):
-        log.info(f"Scanning page {page}/{pages}...")
-        coins = fetch_coin_page(page)
-        time.sleep(2)  # rate limit buffer
-
-        for coin in coins:
-            total_scanned += 1
-            if not passes_filters(coin, benchmark["benchmark_30d"]):
-                continue
-
-            # Fetch detail for exchange count + social data
-            detail = fetch_coin_detail(coin["id"])
-            lead = build_lead(coin, detail, benchmark)
-
-            if lead is None:
-                continue
-
-            if lead["id"] in seen_ids:
-                log.info(f"Skipping already-seen: {lead['name']}")
-                continue
-
-            log.info(f"✅ LEAD: {lead['name']} — Score {lead['composite_score']}")
-            new_leads.append(lead)
-            seen_ids.add(lead["id"])
-
-            if send_individual_alerts:
-                send_telegram_alert(lead)
-                time.sleep(1)
-
-    log.info(f"Scan complete. {total_scanned} coins scanned. {len(new_leads)} new leads.")
-
-    if new_leads:
-        save_leads_log(new_leads)
-        save_seen_ids(seen_ids)
-        if not send_individual_alerts:
-            for lead in new_leads:
-                send_telegram_alert(lead)
-        send_summary_alert(sorted(new_leads, key=lambda x: -x["composite_score"]))
-
-    return new_leads
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", type=int, default=5, help="CoinGecko pages to scan")
-    parser.add_argument("--digest", action="store_true", help="Batch mode: send summary only")
-    args = parser.parse_args()
-    run_scan(pages=args.pages, send_individual_alerts=not args.digest)
+    website = ((detail or {}).get("links
