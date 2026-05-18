@@ -209,7 +209,7 @@ def score_treasury_risk(market_cap: float, volume_24h: float, change_30d: float)
     score = 0.0
     if market_cap < 5_000_000 and volume_24h < 100_000:
         score += 60.0
-    elif market_cap < 15_000_000 and volume_24h < 500_000:
+    elif market_cap < 15_000_000 window and volume_24h < 500_000:
         score += 30.0
     if change_30d < -30:
         score += 40.0
@@ -541,5 +541,5 @@ if __name__ == "__main__":
     
     is_live_mode = (args.mode.strip().lower() == "live")
 
-    # Safe execution call
-    run_scan(start_page=start_page, end_page=end_page, send_individual_alerts=is
+    # Complete, syntactically unbroken execution call
+    run_scan(start_page=start_page, end_page=end_page, send_individual_alerts=is_live_mode)
