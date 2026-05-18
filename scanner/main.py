@@ -1,7 +1,7 @@
 """
 Crypto BD Lead Scanner — Core Intelligence Engine
 Author: @justinbizdev
-Optimized for CoinGecko Public Tier Rate Limits
+Optimized for CoinGecko Public Tier Rate Limits & Action Safety
 """
 
 import os
@@ -108,10 +108,11 @@ def fetch_coin_page(page: int, per_page: int = 100) -> List[Dict[str, Any]]:
         return []
 
 
-def fetch_coin_detail(coin_id: str) -> Optional[Dict[str, Any]]:
-    """Fetch exchange tickers and social metadata for a specific candidate asset."""
+def fetch_coin_detail(coin_id: str, retries: int = 0) -> Optional[Dict[str, Any]]:
+    """Fetch exchange tickers and social metadata with adaptive backup cooling periods."""
     try:
-        time.sleep(2.0)  
+        # Increased baseline cooldown to prevent hitting the public limits aggressively
+        time.sleep(3.5)  
         r = requests.get(
             f"{COINGECKO_BASE}/coins/{coin_id}",
             params={
@@ -124,10 +125,16 @@ def fetch_coin_detail(coin_id: str) -> Optional[Dict[str, Any]]:
             headers=HEADERS,
             timeout=20,
         )
+        
         if r.status_code == 429:
-            log.warning("Rate limit hit (HTTP 429). Pacing execution window for 30s...")
-            time.sleep(30)
-            return fetch_coin_detail(coin_id)
+            if retries >= 3:
+                log.error(f"Max pacing cooling retries reached for target {coin_id}. Dropping pipeline node.")
+                return None
+            # Exponential backoff pacing matrix: 35s, 70s, 140s
+            cool_down = 35 * (2 ** retries)
+            log.warning(f"Rate limit hit (HTTP 429). Execution pacing backoff engaged. Cooling down for {cool_down}s...")
+            time.sleep(cool_down)
+            return fetch_coin_detail(coin_id, retries + 1)
             
         r.raise_for_status()
         return r.json()
@@ -162,6 +169,25 @@ def score_exchange_count(exchange_count: int) -> float:
     if exchange_count <= 1:
         return 100.0
     return ((FILTERS["max_exchange_count"] - exchange_count) / float(FILTERS["max_exchange_count"] - 1)) * 100
+
+
+def score_social_activity(coin_detail: Optional[Dict[str, Any]]) -> float:
+    if not coin_detail:
+        return 50.0
+    community = coin_detail.get("community_data", {}) or {}
+    twitter = community.get("twitter_followers") or 0
+    telegram = community.get("telegram_channel_user_count") or 0
+
+    score = 0.0
+    if 1_000 <= twitter <= 150_000:
+        score += 50.0
+    elif twitter > 150_000:
+        score += 20.0
+    if 500 <= telegram <= 50_000:
+        score += 50.0
+    elif telegram > 50_000:
+        score += 20.0
+    return min(100.0, score)
 
 
 def score_social_activity(coin_detail: Optional[Dict[str, Any]]) -> float:
@@ -339,7 +365,6 @@ def format_alert(lead: dict) -> str:
         contacts.append(f"Web: {escape_markdown(lead['website'])}")
     contacts_str = " | ".join(contacts) if contacts else "None surfaced"
 
-    # Using standard text backticks inside the f-string block to preserve clean layout rendering
     return f"""
 {urgency_bar} *CRITICAL BD SIGNAL FOUND* — Score {score:.0f}/100
 
@@ -465,14 +490,29 @@ def run_scan(pages: int = 5, send_individual_alerts: bool = True):
 
     log.info(f"Filtration framework passed. Surfaced {len(candidate_pool)} candidate targets.")
 
+    # Sort candidates by total_volume ascending to handle highest-priority distress profiles first
+    candidate_pool.sort(key=lambda x: x.get("total_volume", 0))
+
+    # Capping max asset metadata hits per run to prevent public API execution gridlocks
+    MAX_DEEP_SCANS = 15
+    scanned_count = 0
+
     for coin in candidate_pool:
+        if scanned_count >= MAX_DEEP_SCANS:
+            log.info(f"Reached execution threshold limit ({MAX_DEEP_SCANS}) for this run cycle. Stopping.")
+            break
+            
         try:
             if coin["id"] in seen_ids:
                 continue
 
             detail = fetch_coin_detail(coin["id"])
-            lead = build_lead(coin, detail, benchmark)
+            scanned_count += 1
+            
+            if not detail:
+                continue
 
+            lead = build_lead(coin, detail, benchmark)
             if not lead:
                 continue
 
