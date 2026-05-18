@@ -1,275 +1,232 @@
 # Crypto BD Lead Intelligence Scanner
-### Built for @justinbizdev | CEX Listing · MM Advisory · Treasury Management
+### Built for Independent BD Advisors | CEX Listing · MM Advisory · Liquidity Architecture
 
 ---
 
 ## What This Is
 
-A fully automated, GitHub Actions-powered lead generation system that
-continuously scans crypto markets for distressed projects most likely to
-need your services — and delivers qualified, scored leads directly to
-your Telegram, before your competitors even notice them.
+A fully automated, GitHub Actions-powered lead generation system that continuously scans crypto secondary markets for structurally distressed projects most likely to need strategic advisory—and delivers qualified, scored leads directly to your Telegram before your competitors even notice them.
 
 ---
 
 ## System Architecture
 
-```
 ┌─────────────────────────────────────────────────────────┐
-│                   GITHUB ACTIONS (CRON)                 │
-│  06:00 UTC daily · 14:00 UTC daily · Sunday deep scan   │
+│                    GITHUB ACTIONS (CRON)                │
+│   06:00 UTC daily · 14:00 UTC daily · Sunday deep scan  │
 └──────────────────────────┬──────────────────────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │      DATA INGESTION LAYER   │
-            │  CoinGecko /markets (page 1-N)│
-            │  CoinGecko /coins/{id}       │
-            │  (tickers, community_data)   │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │     MARKET CONTEXT LAYER    │
-            │  BTC + ETH 30d performance  │
-            │  → compute benchmark_30d    │
-            │  → detect "market up, coin  │
-            │    down" divergence          │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │       FILTER ENGINE         │
-            │  Volume: $10K – $2M         │
-            │  Market Cap: $500K – $50M   │
-            │  30d change: < -15%         │
-            │  Exchange count: ≤ 8        │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │       SCORING ENGINE        │
-            │  Price Distress   (30%)     │
-            │  Volume Decay     (25%)     │
-            │  Exchange Count   (15%)     │
-            │  Social Activity  (15%)     │
-            │  Treasury Risk    (15%)     │
-            │  → Composite 0-100          │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │    OPPORTUNITY CLASSIFIER   │
-            │  Score profile → service:   │
-            │  · MM Advisory              │
-            │  · CEX Listing Strategy     │
-            │  · Treasury Management      │
-            │  + Outreach angle generated │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │     DEDUPLICATION LAYER     │
-            │  seen_leads.json cache      │
-            │  Never alert same lead 2x   │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │       TELEGRAM ALERTS       │
-            │  Individual: score ≥ 45     │
-            │  Daily digest at scan end   │
-            │  Weekly summary (Sundays)   │
-            └──────────────┬──────────────┘
-                           │
-            ┌──────────────▼──────────────┐
-            │      LEAD ARCHIVE           │
-            │  data/leads_YYYYMMDD.json   │
-            │  GitHub Actions Artifacts   │
-            │  30-day retention           │
-            └─────────────────────────────┘
-```
+│
+┌──────────────▼──────────────┐
+│      DATA INGESTION LAYER   │
+│  CoinGecko /markets (Page 5+)│
+│  CoinGecko /coins/{id}      │
+│  (tickers, community_data)  │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│     MARKET CONTEXT LAYER    │
+│  BTC + ETH 30d performance  │
+│  → compute benchmark_30d    │
+│  → detect "market up, coin  │
+│    down" divergence         │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│        FILTER ENGINE        │
+│  Rank Target: 500 – 2000    │
+│  Volume Matrix: ~$210K      │
+│  7d Change Target: -16.90%  │
+│  Exchange Limit: Exactly 3  │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│        SCORING ENGINE       │
+│  Price Distress   (30%)     │
+│  Volume Decay     (25%)     │
+│  Exchange Count   (15%)     │
+│  Social Activity  (15%)     │
+│  Treasury Risk    (15%)     │
+│  → Composite 0-100          │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│    OPPORTUNITY CLASSIFIER   │
+│  Score profile → service:   │
+│  · MM & CEX Advisory        │
+│  · Liquidity Architecture   │
+│  + Outreach angle generated │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│     DEDUPLICATION LAYER     │
+│  seen_leads.json cache      │
+│  Never alert same lead 2x   │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│       TELEGRAM ALERTS       │
+│  Live Mode: Real-time Ping  │
+│  Digest Mode: Batch Summary │
+└──────────────┬──────────────┘
+│
+┌──────────────▼──────────────┐
+│         LEAD ARCHIVE        │
+│  data/leads_YYYYMMDD.json   │
+│  GitHub Actions Artifacts   │
+└─────────────────────────────┘
+
 
 ---
 
 ## Repo Structure
 
-```
 crypto-bd-scanner/
 │
 ├── .github/
 │   └── workflows/
-│       └── scanner.yml          ← Cron + manual trigger
+│       ├── scanner.yml          ← Cron + Manual UI Input Core
+│       └── keepalive.yml        ← Automatic Anti-Dormancy Engine
 │
 ├── scanner/
-│   ├── main.py                  ← Core engine (scan + score + alert)
-│   ├── scoring.py               ← (optional: extract scoring logic here)
-│   └── telegram.py              ← (optional: extract Telegram logic here)
+│   └── main.py                  ← Monolithic Production Processing Unit
 │
 ├── data/
-│   ├── seen_leads.json          ← Deduplication cache (gitignored)
-│   └── leads_*.json             ← Daily lead archives (gitignored)
+│   ├── seen_leads.json          ← Deduplication Registry (Cached via GHA)
+│   └── leads_*.json             ← Runtime Session Output Logs (Gitignored)
 │
 ├── .gitignore
 ├── requirements.txt
 └── README.md
-```
+
 
 ---
 
-## Setup (48-Hour Deploy)
+## Setup & Production Deployment
 
 ### Step 1: Create the Telegram Bot (10 min)
 
-1. Open Telegram → search **@BotFather**
-2. Send `/newbot` → follow prompts → copy the **bot token**
-3. Start a chat with your new bot (send it any message)
-4. Get your chat ID:
-   ```
-   https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
-   ```
-   Look for `"chat":{"id": YOUR_CHAT_ID}`
+1. Open Telegram and search for **@BotFather**.
+2. Send `/newbot` → complete the naming steps → copy your secure **Bot Token**.
+3. Initialize the chat matrix by opening a message stream with your newly generated bot.
+4. Extract your explicit User/Group Chat ID via the updates tunnel:
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
 
-### Step 2: GitHub Secrets (5 min)
+Locate the structural JSON segment: `"chat":{"id": YOUR_CHAT_ID}`.
 
-In your GitHub repo → Settings → Secrets → Actions → New secret:
+### Step 2: Configure GitHub Actions Secrets (5 min)
 
-| Secret Name          | Value                        |
-|----------------------|------------------------------|
-| `TELEGRAM_BOT_TOKEN` | Your bot token from BotFather|
-| `TELEGRAM_CHAT_ID`   | Your Telegram chat/group ID  |
-| `COINGECKO_API_KEY`  | Optional (free tier works)   |
+Navigate to your GitHub Repository → **Settings** → **Secrets and variables** → **Actions** → Create the following parameters:
 
-### Step 3: Push & Enable Actions (5 min)
+| Secret Name          | Required Value Matrix                        |
+|----------------------|----------------------------------------------|
+| `TELEGRAM_BOT_TOKEN` | Secret alphanumeric token from BotFather     |
+| `TELEGRAM_CHAT_ID`   | Destination Telegram channel/group/user ID   |
+| `COINGECKO_API_KEY`  | Recommended (Demo/Pro key prevents 429 drops)|
 
-```bash
-git init
-git add .
-git commit -m "feat: initial BD scanner deploy"
-git remote add origin https://github.com/YOUR_USERNAME/crypto-bd-scanner
-git push -u origin main
-```
+### Step 3: Run the Engine Manually
 
-Go to Actions tab → Enable workflows → Done.
-
-### Step 4: Test Immediately
-
-Actions tab → "Crypto BD Lead Scanner" → "Run workflow" → Run.
-Within 3-5 minutes, leads will appear in your Telegram.
+1. Click on the **Actions** tab inside your repository.
+2. Select **Crypto BD Lead Scanner** from the left sidebar.
+3. Click the **Run workflow** dropdown menu.
+4. Set your parameters via the UI panel:
+* **CoinGecko pages to scan:** Choose depth (Default: 5 pages, processing starting at page 5 to target rank 500+ directly).
+* **Mode:** Select `live` for instant Telegram pings or `digest` for a clean, aggregated matrix breakdown text.
 
 ---
 
-## Scoring Framework
+## High-Precision Scoring Framework
 
-| Dimension      | Weight | What It Measures |
-|----------------|--------|-----------------|
-| Price Distress | 30%    | Relative decline vs BTC/ETH benchmark |
-| Volume Decay   | 25%    | V/MC ratio — proxy for order book health |
-| Exchange Count | 15%    | Listing gap = advisory opportunity |
-| Social Active  | 15%    | Twitter + Telegram presence (will they respond?) |
-| Treasury Risk  | 15%    | MC decline vs volume = runway pressure |
+The scoring matrix breaks down data points to isolate structural vulnerabilities within a token's order book:
 
-**Score interpretation:**
-- 75–100: 🔴 URGENT — reach out today
-- 60–74:  🟠 HOT — reach out this week
-- 45–59:  🟡 WARM — monitor and reach out
+| Dimension | Weight | What It Measures |
+|-----------|--------|------------------|
+| **Price Distress** | 30% | Deep divergence or market capitulation vs general BTC/ETH 30d baselines. |
+| **Volume Decay** | 25% | Sudden drops in the $V/MC$ ratio, revealing severe order book illiquidity. |
+| **Exchange Count** | 15% | Identifies liquidity locked on exactly 3 venues—leaving them vulnerable to sudden spread gaps. |
+| **Social Activity** | 15% | Community activity check to ensure the project isn't completely abandoned. |
+| **Treasury Risk** | 15% | Accelerated price decline combined with an illiquidity cliff, indicating runaway pressure. |
+
+* **75–100: 🔴 URGENT MATRIX MATCH** — Immediate Outreach Opportunity. Structural leaks verified.
+* **60–74:  🟠 HOT ANOMALY** — Clear order book friction points. Action within the weekly pipeline.
+* **45–59:  🟡 WARM TARGET** — Fragile liquidity. Monitor and sequence.
 
 ---
 
-## Alert Format
+## Production Alert Template
 
-```
-🔴 NEW BD LEAD — Confidence 82/100
+🎯 PRECISION SEARCH INTERCEPTED — Priority Score 82/100
 
 BitYuan ($BTY)
-Rank #1174 on CoinGecko
+CoinGecko Target Rank #1174
 
-📉 Distress Signals:
-  ⚠️ DOWN 42% while market UP 8%
-  ⚠️ CRITICAL volume ($210K/day)
-  ⚠️ ONLY 3 exchange(s)
-  ⚠️ TREASURY risk detected
+📈 Identified Search Anomalies:
+⚠️ CUSTOM TARGET MATRIX MATCH
+⚠️ Venue Liquidity Lock: Listed on exactly 3 exchanges
+⚠️ Momentum Capitulation: 7d Delta at -16.90% (Target: -16.90%)
 
-📊 Metrics:
-  Vol 24h:    $210,000
-  Mkt Cap:    $3,200,000
-  7d Change:  -16.9%
-  30d Change: -42.0%
-  Exchanges:  3
-  Market 30d: +8.0% (benchmark)
+📊 Capital Infrastructure Metrics:
+Vol 24h:   $210,000
+Mkt Cap:   $3,200,000
+7d Delta:  -16.90%
+30d Delta: -42.0%
+Venues:    3 Listed Venues
+Baseline:  +8.0% (Global Benchmark)
 
-🎯 Primary Opportunity: Market Maker Advisory
-💬 Outreach Angle:
-Visible liquidity decay — order book likely thin or manipulated. MM audit would expose structural issues.
+🎯 Target Framework Match: Market Maker & CEX Advisory
+💬 Recommended Outreach Stance:
+Severe order book fragmentation. Listed on exactly 3 venues with vulnerable liquidity depth. Suggesting automated spread stabilization and structural venue expansion blueprint.
 
-📡 Score Breakdown:
+📡 Multi-Dimensional Scoring Core:
+
   Price Distress:  91/100
   Volume Decay:    78/100
-  Exchange Gap:    80/100
+  Exchange Gap:    100/100
   Social Active:   60/100
   Treasury Risk:   70/100
+🔗 Surfaced Outreach Anchors:
+X: @bityuan | TG: t.me/bityuan | Web: bityuan.com
 
-🔗 Contact Points:
-X: @bityuan | t.me/bityuan | bityuan.com
-```
+🕐 2026-05-18 12:15 UTC
 
----
-
-## Rate Limiting Strategy
-
-- CoinGecko free tier: 30 calls/min
-- Scanner sleeps 1.2s between detail calls
-- Pages fetched with 2s buffer
-- At 5 pages × 100 coins = 500 coins reviewed
-- Detail calls only for filter-passing coins (~20-50)
-- Total runtime: ~10-15 minutes per scan
-
-**To avoid hitting limits:**
-- Use CoinGecko Demo API key (free) for 30→50 calls/min
-- Use Pro key for unlimited (not needed for this volume)
 
 ---
 
-## Evolving Into a Proprietary Intelligence System
+## Defensive API Rate Limiting Architecture
 
-### Phase 1 (Now): MVP Scanner
-- CoinGecko markets + detail
-- Score + alert to Telegram
-- GitHub Actions cron
-
-### Phase 2 (+30 days): Signal Enrichment
-- Add LBank/Hotcoin volume as secondary verification
-- Cross-reference MEXC listing data (detect listing candidates)
-- Twitter/X social scraping via nitter or Apify
-
-### Phase 3 (+60 days): Outreach Automation
-- Auto-extract founder Twitter from CoinGecko links
-- Draft personalized first-line outreach using score profile
-- Track lead status in Notion/Airtable via API
-
-### Phase 4 (+90 days): Proprietary Dataset
-- 90 days of daily scans = pattern library
-- Identify which distress profiles → which service need → which responded
-- Build historical "distress-to-close" model
-- This data is YOUR moat. No competitor can buy it.
+To reliably process high-density market loops without exhausting API tokens, the script runs an adaptive pacing mechanism:
+* **Pre-Filtering Optimization:** Performs upfront checks on lightweight market data parameters before running resource-intensive API detail queries.
+* **Corridor Scanning:** Bypasses pages 1–4 entirely (the top 500 tokens) to avoid wasting rate limits on over-brokered assets.
+* **Adaptive Backoff Buffering:** Implements a strict 6.0-second delay between deep token metadata calls, accompanied by automated multi-stage exponential cool-downs if a `429 Too Many Requests` status code is encountered.
 
 ---
 
-## Hidden Distress Pattern Detection
+## Strategic System Evolution Roadmap
 
-Beyond the obvious (price down, volume low), the scanner detects:
+* **Phase 1 (Active): MVP Precision Scanner** — Monolithic filter engine, stateful deduplication cache via GitHub cache, targeted UI configuration options, and Telegram delivery routing.
+* **Phase 2 (+30 Days): Signal Enrichment** — Integration of exchange-side order book depth validation (LBank/Hotcoin metrics) and tracking of exchange listing applications.
+* **Phase 3 (+60 Days): Automated Context Building** — Programmatic extraction of key team handles from public repository metadata and automated drafting of tailored outreach angles mapped to specific scoring data.
+* **Phase 4 (+90 Days): Proprietary Asymmetric Moat** — Building an internal database of distress timelines to model which liquidity indicators show the highest conversion rate for advisory services.
 
-1. **Divergence plays**: Coin DOWN when BTC/ETH UP = structural issue, not market
-2. **Velocity acceleration**: 30d bad + 7d worse = problem deepening
-3. **Liquidity Mirage**: High MC, very low volume = paper value, real illiquidity
-4. **Exchange desert**: 1-2 exchanges + low volume = near-death spiral risk
-5. **Treasury burn cliff**: MC declining + volume under $100K = runway months away
+---
+
+## Advanced Distress Patterns Tracked
+
+1. **Market Divergence Plays:** Tracking assets moving downward while the global benchmark ($BTC$ & $ETH$) shows positive trends. This highlights severe structural or internal liquidity management issues.
+2. **Velocity Multipliers:** Isolating tokens where the short-term 7-day capitulation trend matches or accelerates past the 30-day downside trend, indicating active panic or token dumping.
+3. **Liquidity Fragmentation:** Monitoring projects listed on exactly 3 venues, where shallow order books lead to rapid asset bleeding and wide bid-ask spreads.
 
 ---
 
 ## .gitignore
 
-```
 data/
 .env
-__pycache__/
+pycache/
 *.pyc
 .DS_Store
-```
+.idea/
+.vscode/
+
 
 ---
-
-*Built for @justinbizdev — asymmetric BD intelligence for independent crypto advisors.*
+*Built for Independent BD Advisors — Asymmetric business intelligence infrastructure.*
