@@ -43,7 +43,7 @@ FILTERS = {
     "min_volume_usd":           100_000,      # Smooth bracket around $210K
     "max_volume_usd":           450_000,      # Smooth bracket around $210K
     "target_price_change_7d":   -16.90,       # Your specific capitulation target
-    "allowed_7d_variance":      8.0,          # Balanced variance window (e.g., -8.9% to -24.9%)
+    "allowed_7d_variance":      8.0,          # Balanced variance window (-8.9% to -24.9%)
     "exact_exchange_count":     3,            # Strict listing limit
 }
 
@@ -463,14 +463,14 @@ def save_leads_log(leads: List[Dict[str, Any]]) -> None:
 # ─── EXECUTION TUNNEL ────────────────────────────────────────────────────────
 
 def run_scan(start_page: int = 5, end_page: int = 20, send_individual_alerts: bool = True):
-    log.info("=== Crypto BD Lead Scanner Engine Initiated ===")
+    log.info(f"=== Crypto BD Lead Scanner Engine Initiated (Pages: {start_page} to {end_page}) ===")
 
     benchmark = get_market_benchmark()
     seen_ids = load_seen_ids()
     candidate_pool = []
     new_leads = []
 
-    # Shift entry threshold to check pages 5 through 20 to strictly hit the 500-2000 rank sweet spot
+    # Shift entry threshold to check specified windows to strictly hit the 500-2000 rank sweet spot
     for page in range(start_page, end_page + 1):
         log.info(f"Scanning cap segments page {page}/{end_page}...")
         coins = fetch_coin_page(page)
@@ -533,8 +533,19 @@ def run_scan(start_page: int = 5, end_page: int = 20, send_individual_alerts: bo
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
+    # Backwards compatibility fallback for workflow configurations using '--pages'
+    parser.add_argument("--pages", type=int, default=None)
     parser.add_argument("--start_page", type=int, default=5, help="CoinGecko page index corridor floor")
     parser.add_argument("--end_page", type=int, default=20, help="CoinGecko page index corridor ceiling")
     parser.add_argument("--digest", action="store_true", help="Toggle batch digest summary reporting layout")
     args = parser.parse_args()
-    run_scan(start_page=args.start_page, end_page=args.end_page, send_individual_
+    
+    # Smart routing if your GitHub Actions workflow configuration passes the single '--pages' argument instead
+    final_start = 5
+    final_end = 20
+    if args.pages is not None:
+        # If GitHub UI passes '5', it means process 5 pages starting right from our rank corridor floor
+        final_start = 5
+        final_end = 5 + (args.pages - 1)
+
+    run_scan(start_page=final_start, end_page=final_end, send_individual_alerts=not args.digest)
