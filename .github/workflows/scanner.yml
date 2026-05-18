@@ -57,7 +57,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
         run: |
-          python scanner/main.py --pages 5
+          python scanner/main.py --pages 5 --mode live
 
       - name: Upload lead logs as artifact
         uses: actions/upload-artifact@v4
@@ -89,7 +89,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
         run: |
-          python scanner/main.py --pages 20 --digest
+          python scanner/main.py --pages 20 --mode digest
 
       - name: Upload weekly leads
         uses: actions/upload-artifact@v4
@@ -121,11 +121,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
         run: |
-          MODE_FLAG=""
-          if [ "${{ github.event.inputs.mode }}" = "digest" ]; then
-            MODE_FLAG="--digest"
-          fi
-          python scanner/main.py --pages ${{ github.event.inputs.pages }} $MODE_FLAG
+          python scanner/main.py --pages ${{ github.event.inputs.pages }} --mode ${{ github.event.inputs.mode }}
 
       - name: Upload results
         uses: actions/upload-artifact@v4
