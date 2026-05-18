@@ -2,20 +2,39 @@ name: Keepalive
 
 on:
   schedule:
-    # Runs on the 1st of every month at 07:00 UTC
+    # Runs on the 1st of every month at 07:00 UTC (Safely prevents repo dormancy)
     - cron: "0 7 1 * *"
+  workflow_dispatch: # Allows you to manually test it from the GitHub UI if needed
 
 jobs:
   keepalive:
     runs-on: ubuntu-latest
+    # CRITICAL: Elevate token permissions to allow the bot to commit and push changes
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          # Use a fetch-depth of 0 to ensure the local git tree is fully aware of the remote state
+          fetch-depth: 0
 
       - name: Bump keepalive timestamp
         run: |
+          # Create data directory if it matches your repo architecture, or keep it in root
           echo "Last keepalive: $(date -u)" > .keepalive
+          
+          # Setup standard GitHub Actions Bot identity
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
           git add .keepalive
-          git commit -m "chore: keepalive $(date -u +%Y-%m)"
-          git push
+          
+          # Only commit and push if changes actually exist to avoid empty commit errors
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore: keepalive $(date -u +%Y-%m)"
+            git push
+          else
+            echo "No infrastructure variations detected. Keepalive timestamp is already current."
+          fi
