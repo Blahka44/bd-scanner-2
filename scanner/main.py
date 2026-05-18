@@ -116,7 +116,7 @@ def fetch_coin_page(page: int, per_page: int = 100, retries: int = 0) -> List[Di
                 log.error(f"Critical rate limit block. Page index matrix {page} abandoned.")
                 return []
             wait_time = 60 * (2 ** retries)
-            log.warning(f"Rate limit hit on page {page} (HTTP 429). Cooling down for {wait_time}s...")
+            log.warning(f"Rate limit hit on market ingestion page {page} (HTTP 429). Backing off for {wait_time}s...")
             time.sleep(wait_time)
             return fetch_coin_page(page, per_page, retries + 1)
             
@@ -149,7 +149,7 @@ def fetch_coin_detail(coin_id: str, retries: int = 0) -> Optional[Dict[str, Any]
                 log.error(f"Max pacing cooling retries reached for target {coin_id}. Dropping pipeline node.")
                 return None
             cool_down = 60 * (2 ** retries)
-            log.warning(f"Rate limit hit on detail asset {coin_id} (HTTP 429). Cooling down for {cool_down}s...")
+            log.warning(f"Rate limit hit on detail asset {coin_id} (HTTP 429). Pacing execution window for {cool_down}s...")
             time.sleep(cool_down)
             return fetch_coin_detail(coin_id, retries + 1)
             
@@ -472,7 +472,6 @@ def run_scan(start_page: int, end_page: int, send_individual_alerts: bool):
     candidate_pool = []
     new_leads = []
 
-    # Shift entry threshold to check specified windows to strictly hit the 500-2000 rank sweet spot
     for page in range(start_page, end_page + 1):
         log.info(f"Scanning cap segments page {page}/{end_page}...")
         coins = fetch_coin_page(page)
@@ -486,7 +485,6 @@ def run_scan(start_page: int, end_page: int, send_individual_alerts: bool):
 
     log.info(f"Upfront profiling complete. Isolated {len(candidate_pool)} high-probability targets.")
 
-    # Sort matching candidates so the ones closest to your exact volume parameters process first
     candidate_pool.sort(key=lambda x: abs((x.get("total_volume") or 0) - 210000))
 
     MAX_DEEP_SCANS = 15
@@ -525,7 +523,6 @@ def run_scan(start_page: int, end_page: int, send_individual_alerts: bool):
         save_leads_log(new_leads)
         save_seen_ids(seen_ids)
         if not send_individual_alerts:
-            # If batch digest mode, only send the grouped breakdown report
             send_summary_alert(sorted(new_leads, key=lambda x: -x["composite_score"]))
 
     return new_leads
@@ -533,17 +530,16 @@ def run_scan(start_page: int, end_page: int, send_individual_alerts: bool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # Captures inputs exactly as passed by your workflow file string commands
     parser.add_argument("--pages", type=int, default=5, help="CoinGecko UI page count slider input")
     parser.add_argument("--mode", type=str, default="live", choices=["live", "digest"], help="Alert distribution mode")
     args = parser.parse_args()
     
-    # We want to skip pages 1-4 entirely (Top 500 tokens). 
-    # Page 5 captures ranks 401-500. Page 6 captures 501-600.
-    # Therefore, we always start hunting from page 5, going deep into the corridor.
+    # Skip pages 1-4 entirely (Top 500 tokens) to save rate limits
+    # Page 5 captures ranks 401-500, Page 6 captures 501-600, etc.
     start_page = 5
     end_page = start_page + (args.pages - 1)
     
     is_live_mode = (args.mode.strip().lower() == "live")
 
-    run_scan(start_page=start_page, end_page=end_page, send_individual_alerts=is_
+    # Safe execution call
+    run_scan(start_page=start_page, end_page=end_page, send_individual_alerts=is
