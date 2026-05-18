@@ -125,22 +125,15 @@ def fetch_coin_detail(coin_id: str) -> Optional[dict]:
 # ─── SCORING ENGINE ──────────────────────────────────────────────────────────
 
 def score_price_distress(change_30d: float, benchmark_30d: float) -> float:
-    """
-    Score 0–100. Higher = more distressed relative to market.
-    Coin down 40% when market is up 10% = maximum signal.
-    """
-    relative_pain = (benchmark_30d - change_30d)   # positive = underperforming
+    """Score 0–100. Higher = more distressed relative to market."""
+    relative_pain = (benchmark_30d - change_30d)
     if relative_pain <= 0:
         return 0.0
-    # 50pp relative underperformance = perfect score
     return min(100.0, (relative_pain / 50.0) * 100)
 
 
 def score_volume_decay(volume_24h: float, market_cap: float) -> float:
-    """
-    Score 0–100. Low volume relative to market cap = liquidity decay.
-    V/MC ratio < 0.5% is concerning; < 0.1% is crisis-level.
-    """
+    """Score 0–100. Low volume relative to market cap = liquidity decay."""
     if market_cap <= 0:
         return 0.0
     ratio = (volume_24h / market_cap) * 100
@@ -148,7 +141,6 @@ def score_volume_decay(volume_24h: float, market_cap: float) -> float:
         return 0.0
     if ratio <= 0.05:
         return 100.0
-    # Logarithmic decay scoring
     return min(100.0, (1 - math.log(ratio / 0.05) / math.log(100)) * 100)
 
 
@@ -162,17 +154,13 @@ def score_exchange_count(exchange_count: int) -> float:
 
 
 def score_social_activity(coin_detail: Optional[dict]) -> float:
-    """
-    Proxy: community data signals the team still cares / will respond.
-    Twitter followers, Telegram members used as proxies.
-    """
+    """Proxy: community data signals the team still cares / will respond."""
     if not coin_detail:
-        return 50.0  # neutral when data missing
+        return 50.0
     community = coin_detail.get("community_data", {}) or {}
     twitter = community.get("twitter_followers") or 0
     telegram = community.get("telegram_channel_user_count") or 0
 
-    # Goldilocks zone: active but not massive (1K–100K Twitter)
     score = 0.0
     if 1_000 <= twitter <= 100_000:
         score += 50.0
@@ -186,17 +174,12 @@ def score_social_activity(coin_detail: Optional[dict]) -> float:
 
 
 def score_treasury_risk(market_cap: float, volume_24h: float, change_30d: float) -> float:
-    """
-    Projects bleeding market cap with low volume face runway pressure.
-    This maps to treasury management urgency.
-    """
+    """Urgency scoring reflecting burn risk and runway pressures."""
     score = 0.0
-    # MC under $5M with volume under $100K = treasury alarm
     if market_cap < 5_000_000 and volume_24h < 100_000:
         score += 60.0
     elif market_cap < 10_000_000 and volume_24h < 500_000:
         score += 30.0
-    # Severe 30d decline accelerates treasury burn
     if change_30d < -40:
         score += 40.0
     elif change_30d < -25:
@@ -204,19 +187,13 @@ def score_treasury_risk(market_cap: float, volume_24h: float, change_30d: float)
     return min(100.0, score)
 
 
-def compute_composite_score(
-    price_score: float,
-    volume_score: float,
-    exchange_score: float,
-    social_score: float,
-    treasury_score: float,
-) -> float:
+def compute_composite_score(p_s, v_s, e_s, s_s, t_s) -> float:
     return (
-        price_score    * WEIGHTS["price_distress"] +
-        volume_score   * WEIGHTS["volume_decay"] +
-        exchange_score * WEIGHTS["exchange_count"] +
-        social_score   * WEIGHTS["social_activity"] +
-        treasury_score * WEIGHTS["treasury_risk"]
+        p_s * WEIGHTS["price_distress"] +
+        v_s * WEIGHTS["volume_decay"] +
+        e_s * WEIGHTS["exchange_count"] +
+        s_s * WEIGHTS["social_activity"] +
+        t_s * WEIGHTS["treasury_risk"]
     )
 
 
@@ -225,18 +202,13 @@ def classify_opportunity(scores: dict, coin: dict) -> dict:
     primary_service = "CEX Listing Strategy"
     angle = "Expand exchange presence to recover liquidity and price discovery"
 
-    volume_s = scores["volume_decay"]
-    price_s  = scores["price_distress"]
-    treasury_s = scores["treasury_risk"]
-    exchange_s = scores["exchange_count"]
-
-    if volume_s > 70 and price_s > 60:
+    if scores["volume_decay"] > 70 and scores["price_distress"] > 60:
         primary_service = "Market Maker Advisory"
         angle = "Visible liquidity decay — order book likely thin or manipulated. MM audit would expose structural issues."
-    elif treasury_s > 60:
+    elif scores["treasury_risk"] > 60:
         primary_service = "Treasury Management"
         angle = "Market cap declining fast with low volume suggests runway pressure. Treasury strategy is urgent."
-    elif exchange_s > 70:
+    elif scores["exchange_count"] > 70:
         primary_service = "CEX Listing Strategy"
         angle = "Only on a few exchanges. Wider listing = more liquidity, better price support, more visibility."
 
@@ -266,13 +238,11 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
     volume_24h = coin.get("total_volume") or 0
     market_cap = coin.get("market_cap") or 0
 
-    # Exchange count from tickers
-    exchange_count = 3  # default fallback
+    exchange_count = 3
     if detail and detail.get("tickers"):
         exchanges = set(t.get("market", {}).get("name", "") for t in detail["tickers"])
         exchange_count = len(exchanges)
 
-    # Score each dimension
     price_s    = score_price_distress(change_30d, benchmark_30d)
     volume_s   = score_volume_decay(volume_24h, market_cap)
     exchange_s = score_exchange_count(exchange_count)
@@ -281,7 +251,6 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
 
     composite = compute_composite_score(price_s, volume_s, exchange_s, social_s, treasury_s)
 
-    # Only surface high-signal leads
     if composite < 45:
         return None
 
@@ -291,7 +260,6 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
         coin
     )
 
-    # Detect hidden distress patterns
     distress_flags = []
     if change_30d < -30 and benchmark_30d > 0:
         distress_flags.append(f"DOWN {abs(change_30d):.0f}% while market UP {benchmark_30d:.0f}%")
@@ -307,6 +275,240 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
         distress_flags.append(f"ACCELERATING decline ({change_7d:.0f}% 7d)")
 
     community = (detail or {}).get("community_data", {}) or {}
-    twitter_url = (detail or {}).get("links", {}).get("twitter_screen_name", "")
-    telegram_handle = (detail or {}).get("links", {}).get("telegram_channel_identifier", "")
-    website = ((detail or {}).get("links
+    links_data = (detail or {}).get("links", {}) or {}
+    twitter_url = links_data.get("twitter_screen_name", "")
+    telegram_handle = links_data.get("telegram_channel_identifier", "")
+    homepage_list = links_data.get("homepage", []) or [""]
+    website = homepage_list[0] if homepage_list else None
+
+    return {
+        "id": coin["id"],
+        "name": coin["name"],
+        "symbol": coin["symbol"].upper(),
+        "rank": coin.get("market_cap_rank"),
+        "price_usd": coin.get("current_price"),
+        "change_7d": change_7d,
+        "change_30d": change_30d,
+        "volume_24h": volume_24h,
+        "market_cap": market_cap,
+        "exchange_count": exchange_count,
+        "composite_score": round(composite, 1),
+        "scores": {
+            "price_distress": round(price_s, 1),
+            "volume_decay": round(volume_s, 1),
+            "exchange_count": round(exchange_s, 1),
+            "social_activity": round(social_s, 1),
+            "treasury_risk": round(treasury_s, 1),
+        },
+        "distress_flags": distress_flags,
+        "primary_service": opportunity["primary_service"],
+        "outreach_angle": opportunity["angle"],
+        "twitter": f"@{twitter_url}" if twitter_url else None,
+        "telegram": f"t.me/{telegram_handle}" if telegram_handle else None,
+        "website": website or None,
+        "twitter_followers": community.get("twitter_followers"),
+        "benchmark_30d": round(benchmark_30d, 2),
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ─── TELEGRAM ALERT ──────────────────────────────────────────────────────────
+
+def format_alert(lead: dict) -> str:
+    score = lead["composite_score"]
+    urgency_bar = "🔴" if score >= 75 else "🟠" if score >= 60 else "🟡"
+    flags_str = "\n".join(f"  ⚠️ {f}" for f in lead["distress_flags"])
+
+    score_breakdown = (
+        f"  Price Distress:  {lead['scores']['price_distress']:.0f}/100\n"
+        f"  Volume Decay:    {lead['scores']['volume_decay']:.0f}/100\n"
+        f"  Exchange Gap:    {lead['scores']['exchange_count']:.0f}/100\n"
+        f"  Social Active:   {lead['scores']['social_activity']:.0f}/100\n"
+        f"  Treasury Risk:   {lead['scores']['treasury_risk']:.0f}/100"
+    )
+
+    contacts = []
+    if lead.get("twitter"):
+        contacts.append(f"X: {lead['twitter']}")
+    if lead.get("telegram"):
+        contacts.append(f"TG: {lead['telegram']}")
+    if lead.get("website"):
+        contacts.append(f"Web: {lead['website']}")
+    contacts_str = " | ".join(contacts) if contacts else "Not found"
+
+    volume_fmt = f"${lead['volume_24h']:,.0f}"
+    mc_fmt = f"${lead['market_cap']:,.0f}"
+
+    return f"""
+{urgency_bar} *NEW BD LEAD* — Confidence {score:.0f}/100
+
+*{lead['name']} (${lead['symbol']})*
+Rank #{lead['rank']} on CoinGecko
+
+📉 *Distress Signals:*
+{flags_str}
+
+📊 *Metrics:*
+  Vol 24h:   {volume_fmt}
+  Mkt Cap:   {mc_fmt}
+  7d Change: {lead['change_7d']:+.1f}%
+  30d Change:{lead['change_30d']:+.1f}%
+  Exchanges: {lead['exchange_count']}
+  Market 30d:{lead['benchmark_30d']:+.1f}% (benchmark)
+
+🎯 *Primary Opportunity:* {lead['primary_service']}
+💬 *Outreach Angle:*
+_{lead['outreach_angle']}_
+
+📡 *Score Breakdown:*
+{score_breakdown}
+
+🔗 *Contact Points:*
+{contacts_str}
+
+🕐 _{lead['scanned_at'][:16].replace('T',' ')} UTC_
+""".strip()
+
+
+def send_telegram_alert(lead: dict) -> bool:
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log.warning("Telegram credentials not set — printing to console")
+        print(format_alert(lead))
+        return True
+    try:
+        msg = format_alert(lead)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": msg,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        log.error(f"Telegram send failed: {e}")
+        return False
+
+
+def send_summary_alert(leads: list[dict]) -> None:
+    if not leads:
+        return
+    lines = [f"📋 *DAILY SCAN SUMMARY — {len(leads)} leads found*\n"]
+    for i, lead in enumerate(leads[:10], 1):
+        score = lead["composite_score"]
+        icon = "🔴" if score >= 75 else "🟠" if score >= 60 else "🟡"
+        lines.append(
+            f"{i}. {icon} *{lead['name']}* (${lead['symbol']}) — "
+            f"Score: {score:.0f} | {lead['primary_service']}"
+        )
+    msg = "\n".join(lines)
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception as e:
+        log.error(f"Summary send failed: {e}")
+
+
+# ─── DEDUPLICATION ───────────────────────────────────────────────────────────
+
+def load_seen_ids() -> set:
+    path = "data/seen_leads.json"
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_seen_ids(seen: set) -> None:
+    os.makedirs("data", exist_ok=True)
+    with open("data/seen_leads.json", "w") as f:
+        json.dump(list(seen), f)
+
+
+def save_leads_log(leads: list[dict]) -> None:
+    os.makedirs("data", exist_ok=True)
+    path = f"data/leads_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.json"
+    with open(path, "w") as f:
+        json.dump(leads, f, indent=2)
+    log.info(f"Saved {len(leads)} leads to {path}")
+
+
+# ─── MAIN SCAN LOOP ──────────────────────────────────────────────────────────
+
+def run_scan(pages: int = 5, send_individual_alerts: bool = True):
+    log.info("=== Crypto BD Lead Scanner starting ===")
+
+    benchmark = get_market_benchmark()
+    seen_ids = load_seen_ids()
+    new_leads = []
+    total_scanned = 0
+
+    for page in range(1, pages + 1):
+        log.info(f"Scanning page {page}/{pages}...")
+        coins = fetch_coin_page(page)
+        
+        if page < pages:
+            time.sleep(12)  # Cooldown block to avoid Public HTTP 429 filters
+
+        if not coins:
+            log.warning(f"No data returned for page {page}, skipping.")
+            continue
+
+        for coin in coins:
+            total_scanned += 1
+            try:
+                if not passes_filters(coin, benchmark["benchmark_30d"]):
+                    continue
+
+                detail = fetch_coin_detail(coin["id"])
+                lead = build_lead(coin, detail, benchmark)
+
+                if lead is None:
+                    continue
+
+                if lead["id"] in seen_ids:
+                    log.info(f"Skipping already-seen: {lead['name']}")
+                    continue
+
+                log.info(f"✅ LEAD: {lead['name']} — Score {lead['composite_score']}")
+                new_leads.append(lead)
+                seen_ids.add(lead["id"])
+
+                if send_individual_alerts:
+                    send_telegram_alert(lead)
+                    time.sleep(1.5)
+
+            except Exception as item_error:
+                log.error(f"Error processing item token {coin.get('id', 'unknown')}: {item_error}")
+                continue
+
+    log.info(f"Scan complete. {total_scanned} coins scanned. {len(new_leads)} new leads.")
+
+    if new_leads:
+        save_leads_log(new_leads)
+        save_seen_ids(seen_ids)
+        if not send_individual_alerts:
+            for lead in new_leads:
+                send_telegram_alert(lead)
+        send_summary_alert(sorted(new_leads, key=lambda x: -x["composite_score"]))
+
+    return new_leads
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pages", type=int, default=5, help="CoinGecko pages to scan")
+    parser.add_argument("--digest", action="store_true", help="Batch mode: send summary only")
+    args = parser.parse_args()
+    run_scan(pages=args.pages, send_individual_alerts=not args.digest)
