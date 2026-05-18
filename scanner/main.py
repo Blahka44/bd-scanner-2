@@ -10,6 +10,7 @@ import time
 import logging
 import requests
 import math
+import argparse
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Set
 
@@ -462,8 +463,9 @@ def save_leads_log(leads: List[Dict[str, Any]]) -> None:
 
 # ─── EXECUTION TUNNEL ────────────────────────────────────────────────────────
 
-def run_scan(start_page: int = 5, end_page: int = 20, send_individual_alerts: bool = True):
+def run_scan(start_page: int, end_page: int, send_individual_alerts: bool):
     log.info(f"=== Crypto BD Lead Scanner Engine Initiated (Pages: {start_page} to {end_page}) ===")
+    log.info(f"=== Delivery Mode Configuration: {'LIVE ALERTS' if send_individual_alerts else 'BATCH DIGEST SUMMARY'} ===")
 
     benchmark = get_market_benchmark()
     seen_ids = load_seen_ids()
@@ -487,7 +489,7 @@ def run_scan(start_page: int = 5, end_page: int = 20, send_individual_alerts: bo
     # Sort matching candidates so the ones closest to your exact volume parameters process first
     candidate_pool.sort(key=lambda x: abs((x.get("total_volume") or 0) - 210000))
 
-    MAX_DEEP_SCANS = 10
+    MAX_DEEP_SCANS = 15
     scanned_count = 0
 
     for coin in candidate_pool:
@@ -523,29 +525,25 @@ def run_scan(start_page: int = 5, end_page: int = 20, send_individual_alerts: bo
         save_leads_log(new_leads)
         save_seen_ids(seen_ids)
         if not send_individual_alerts:
-            for lead in new_leads:
-                send_telegram_alert(lead)
-        send_summary_alert(sorted(new_leads, key=lambda x: -x["composite_score"]))
+            # If batch digest mode, only send the grouped breakdown report
+            send_summary_alert(sorted(new_leads, key=lambda x: -x["composite_score"]))
 
     return new_leads
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-    # Backwards compatibility fallback for workflow configurations using '--pages'
-    parser.add_argument("--pages", type=int, default=None)
-    parser.add_argument("--start_page", type=int, default=5, help="CoinGecko page index corridor floor")
-    parser.add_argument("--end_page", type=int, default=20, help="CoinGecko page index corridor ceiling")
-    parser.add_argument("--digest", action="store_true", help="Toggle batch digest summary reporting layout")
+    # Captures inputs exactly as passed by your workflow file string commands
+    parser.add_argument("--pages", type=int, default=5, help="CoinGecko UI page count slider input")
+    parser.add_argument("--mode", type=str, default="live", choices=["live", "digest"], help="Alert distribution mode")
     args = parser.parse_args()
     
-    # Smart routing if your GitHub Actions workflow configuration passes the single '--pages' argument instead
-    final_start = 5
-    final_end = 20
-    if args.pages is not None:
-        # If GitHub UI passes '5', it means process 5 pages starting right from our rank corridor floor
-        final_start = 5
-        final_end = 5 + (args.pages - 1)
+    # We want to skip pages 1-4 entirely (Top 500 tokens). 
+    # Page 5 captures ranks 401-500. Page 6 captures 501-600.
+    # Therefore, we always start hunting from page 5, going deep into the corridor.
+    start_page = 5
+    end_page = start_page + (args.pages - 1)
+    
+    is_live_mode = (args.mode.strip().lower() == "live")
 
-    run_scan(start_page=final_start, end_page=final_end, send_individual_alerts=not args.digest)
+    run_scan(start_page=start_page, end_page=end_page, send_individual_alerts=is_
