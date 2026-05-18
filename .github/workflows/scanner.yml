@@ -1,0 +1,135 @@
+name: Crypto BD Lead Scanner
+
+on:
+  schedule:
+    # ─── Primary scan: 06:00 UTC daily (Lagos morning — you wake to leads) ───
+    - cron: "0 6 * * *"
+    # ─── Secondary scan: 14:00 UTC (afternoon liquidity window) ──────────────
+    - cron: "0 14 * * *"
+    # ─── Weekly deep scan: Sunday 08:00 UTC (more pages, digest mode) ────────
+    - cron: "0 8 * * 0"
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "CoinGecko pages to scan (default: 5)"
+        required: false
+        default: "5"
+      mode:
+        description: "Mode: live (individual alerts) or digest (summary only)"
+        required: false
+        default: "live"
+
+jobs:
+  daily-scan:
+    name: Lead Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && (github.event.schedule == '0 6 * * *' || github.event.schedule == '0 14 * * *')
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore lead history (deduplication)
+        uses: actions/cache@v4
+        with:
+          path: data/seen_leads.json
+          key: seen-leads-${{ github.run_id }}
+          restore-keys: |
+            seen-leads-
+
+      - name: Run scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+        run: |
+          python scanner/main.py --pages 5
+
+      - name: Upload lead logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: leads-${{ github.run_id }}
+          path: data/leads_*.json
+          retention-days: 30
+
+  weekly-deep-scan:
+    name: Weekly Deep Scan (Digest)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 8 * * 0'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run deep scan (20 pages, digest mode)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+        run: |
+          python scanner/main.py --pages 20 --digest
+
+      - name: Upload weekly leads
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-leads-${{ github.run_id }}
+          path: data/leads_*.json
+          retention-days: 90
+
+  manual-scan:
+    name: Manual Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run manual scan
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+        run: |
+          MODE_FLAG=""
+          if [ "${{ github.event.inputs.mode }}" = "digest" ]; then
+            MODE_FLAG="--digest"
+          fi
+          python scanner/main.py --pages ${{ github.event.inputs.pages }} $MODE_FLAG
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-leads-${{ github.run_id }}
+          path: data/leads_*.json
+          retention-days: 14
