@@ -11,7 +11,7 @@ import logging
 import requests
 import math
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List, Dict, Any, Set
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,33 +23,43 @@ log = logging.getLogger(__name__)
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Optional Key
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 
 HEADERS = {"x-cg-demo-api-key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
 
 # ─── SCORING WEIGHTS ────────────────────────────────────────────────────────
 WEIGHTS = {
-    "price_distress":    0.30,   # severe price decline vs market
-    "volume_decay":      0.25,   # low/declining volume
-    "exchange_count":    0.15,   # listed on few exchanges
-    "social_activity":   0.15,   # still active (will respond)
-    "treasury_risk":     0.15,   # market cap vs volume ratio (burn risk)
+    "price_distress":    0.30,
+    "volume_decay":      0.25,
+    "exchange_count":    0.15,
+    "social_activity":   0.15,
+    "treasury_risk":     0.15,
 }
 
-# ─── FILTER THRESHOLDS ──────────────────────────────────────────────────────
+# ─── RELAXED PRODUCTION FILTER THRESHOLDS ────────────────────────────────────
 FILTERS = {
-    "max_volume_usd":           2_000_000,   # under $2M daily volume
-    "min_volume_usd":           10_000,      # not completely dead
-    "max_price_change_30d":    -15.0,        # at least -15% in 30d
-    "max_exchange_count":       8,           # 8 or fewer exchanges
-    "min_market_cap":           500_000,     # above dust threshold
-    "max_market_cap":           50_000_000,  # not a top-100 coin (won't respond)
+    "max_volume_usd":           5_000_000,
+    "min_volume_usd":           5_000,
+    "max_price_change_30d":     5.0,
+    "max_exchange_count":       12,
+    "min_market_cap":           300_000,
+    "max_market_cap":           75_000_000,
 }
+
+
+# ─── UTILITY FUNCTIONS ────────────────────────────────────────────────────────
+
+def escape_markdown(text: str) -> str:
+    """Escape markdown special characters to prevent Telegram API parsing crashes."""
+    if not text:
+        return ""
+    escape_chars = r'_*`['
+    return "".join(f"\\{c}" if c in escape_chars else c for c in text)
 
 
 # ─── DATA INGESTION ──────────────────────────────────────────────────────────
 
-def get_market_benchmark() -> dict:
+def get_market_benchmark() -> Dict[str, float]:
     """Fetch BTC and ETH 30d performance as market baseline."""
     try:
         r = requests.get(
@@ -68,15 +78,15 @@ def get_market_benchmark() -> dict:
         btc_30d = data.get("bitcoin", {}).get("usd_30d_change", 0) or 0
         eth_30d = data.get("ethereum", {}).get("usd_30d_change", 0) or 0
         benchmark = (btc_30d + eth_30d) / 2
-        log.info(f"Market benchmark 30d: {benchmark:.2f}%")
+        log.info(f"Market benchmark 30d baseline calculated: {benchmark:.2f}%")
         return {"benchmark_30d": benchmark, "btc_30d": btc_30d, "eth_30d": eth_30d}
     except Exception as e:
-        log.warning(f"Benchmark fetch failed: {e}")
+        log.warning(f"Benchmark framework fetch failed, defaulting to 0: {e}")
         return {"benchmark_30d": 0, "btc_30d": 0, "eth_30d": 0}
 
 
-def fetch_coin_page(page: int, per_page: int = 100) -> list:
-    """Fetch one page of coins from CoinGecko markets endpoint."""
+def fetch_coin_page(page: int, per_page: int = 100) -> List[Dict[str, Any]]:
+    """Fetch one page of coins ordered by volume from CoinGecko markets endpoint."""
     try:
         r = requests.get(
             f"{COINGECKO_BASE}/coins/markets",
@@ -94,15 +104,14 @@ def fetch_coin_page(page: int, per_page: int = 100) -> list:
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        log.error(f"Page {page} fetch failed: {e}")
+        log.error(f"Page {page} market ingestion failed: {e}")
         return []
 
 
-def fetch_coin_detail(coin_id: str) -> Optional[dict]:
-    """Fetch exchange count and social data for a specific coin."""
+def fetch_coin_detail(coin_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch exchange tickers and social metadata for a specific candidate asset."""
     try:
-        # Respect rate limits between detailed single asset calls
-        time.sleep(1.5)  
+        time.sleep(2.0)  
         r = requests.get(
             f"{COINGECKO_BASE}/coins/{coin_id}",
             params={
@@ -115,17 +124,21 @@ def fetch_coin_detail(coin_id: str) -> Optional[dict]:
             headers=HEADERS,
             timeout=20,
         )
+        if r.status_code == 429:
+            log.warning("Rate limit hit (HTTP 429). Pacing execution window for 30s...")
+            time.sleep(30)
+            return fetch_coin_detail(coin_id)
+            
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        log.warning(f"Detail fetch failed for {coin_id}: {e}")
+        log.warning(f"Metadata extraction failed for asset context {coin_id}: {e}")
         return None
 
 
-# ─── SCORING ENGINE ──────────────────────────────────────────────────────────
+# ─── MATH & SCORING INTELLIGENCE ENGINE ───────────────────────────────────────
 
 def score_price_distress(change_30d: float, benchmark_30d: float) -> float:
-    """Score 0–100. Higher = more distressed relative to market."""
     relative_pain = (benchmark_30d - change_30d)
     if relative_pain <= 0:
         return 0.0
@@ -133,7 +146,6 @@ def score_price_distress(change_30d: float, benchmark_30d: float) -> float:
 
 
 def score_volume_decay(volume_24h: float, market_cap: float) -> float:
-    """Score 0–100. Low volume relative to market cap = liquidity decay."""
     if market_cap <= 0:
         return 0.0
     ratio = (volume_24h / market_cap) * 100
@@ -145,16 +157,14 @@ def score_volume_decay(volume_24h: float, market_cap: float) -> float:
 
 
 def score_exchange_count(exchange_count: int) -> float:
-    """Score 0–100. Fewer exchanges = higher advisory need."""
-    if exchange_count >= 10:
+    if exchange_count >= FILTERS["max_exchange_count"]:
         return 0.0
     if exchange_count <= 1:
         return 100.0
-    return ((10 - exchange_count) / 9.0) * 100
+    return ((FILTERS["max_exchange_count"] - exchange_count) / float(FILTERS["max_exchange_count"] - 1)) * 100
 
 
-def score_social_activity(coin_detail: Optional[dict]) -> float:
-    """Proxy: community data signals the team still cares / will respond."""
+def score_social_activity(coin_detail: Optional[Dict[str, Any]]) -> float:
     if not coin_detail:
         return 50.0
     community = coin_detail.get("community_data", {}) or {}
@@ -162,32 +172,31 @@ def score_social_activity(coin_detail: Optional[dict]) -> float:
     telegram = community.get("telegram_channel_user_count") or 0
 
     score = 0.0
-    if 1_000 <= twitter <= 100_000:
+    if 1_000 <= twitter <= 150_000:
         score += 50.0
-    elif twitter > 0:
+    elif twitter > 150_000:
         score += 20.0
     if 500 <= telegram <= 50_000:
         score += 50.0
-    elif telegram > 0:
+    elif telegram > 50_000:
         score += 20.0
     return min(100.0, score)
 
 
 def score_treasury_risk(market_cap: float, volume_24h: float, change_30d: float) -> float:
-    """Urgency scoring reflecting burn risk and runway pressures."""
     score = 0.0
     if market_cap < 5_000_000 and volume_24h < 100_000:
         score += 60.0
-    elif market_cap < 10_000_000 and volume_24h < 500_000:
+    elif market_cap < 15_000_000 and volume_24h < 500_000:
         score += 30.0
-    if change_30d < -40:
+    if change_30d < -30:
         score += 40.0
-    elif change_30d < -25:
+    elif change_30d < -15:
         score += 20.0
     return min(100.0, score)
 
 
-def compute_composite_score(p_s, v_s, e_s, s_s, t_s) -> float:
+def compute_composite_score(p_s: float, v_s: float, e_s: float, s_s: float, t_s: float) -> float:
     return (
         p_s * WEIGHTS["price_distress"] +
         v_s * WEIGHTS["volume_decay"] +
@@ -197,27 +206,26 @@ def compute_composite_score(p_s, v_s, e_s, s_s, t_s) -> float:
     )
 
 
-def classify_opportunity(scores: dict, coin: dict) -> dict:
-    """Map score profile to primary service opportunity."""
+def classify_opportunity(scores: Dict[str, float]) -> Dict[str, str]:
     primary_service = "CEX Listing Strategy"
-    angle = "Expand exchange presence to recover liquidity and price discovery"
+    angle = "Expand secondary market listing layout to counter order book fragmentation and support price discovery."
 
-    if scores["volume_decay"] > 70 and scores["price_distress"] > 60:
+    if scores["volume_decay"] > 70 and scores["price_distress"] > 55:
         primary_service = "Market Maker Advisory"
-        angle = "Visible liquidity decay — order book likely thin or manipulated. MM audit would expose structural issues."
+        angle = "Advanced order book liquidity decay observed. Spread gap optimization and depth restructuring required."
     elif scores["treasury_risk"] > 60:
         primary_service = "Treasury Management"
-        angle = "Market cap declining fast with low volume suggests runway pressure. Treasury strategy is urgent."
-    elif scores["exchange_count"] > 70:
+        angle = "Low volume profile combined with capital bleed indicates runway pressures. Structural treasury architecture suggested."
+    elif scores["exchange_count"] > 75:
         primary_service = "CEX Listing Strategy"
-        angle = "Only on a few exchanges. Wider listing = more liquidity, better price support, more visibility."
+        angle = "Asset is localized on thin venues. Broader exchange access required to preserve long term token survival."
 
     return {"primary_service": primary_service, "angle": angle}
 
 
-# ─── LEAD QUALIFICATION ──────────────────────────────────────────────────────
+# ─── FILTER & PIPELINE MANAGEMENT ───────────────────────────────────────────
 
-def passes_filters(coin: dict, benchmark_30d: float) -> bool:
+def passes_filters(coin: Dict[str, Any]) -> bool:
     vol = coin.get("total_volume") or 0
     mc  = coin.get("market_cap") or 0
     chg30 = coin.get("price_change_percentage_30d_in_currency") or 0
@@ -231,7 +239,7 @@ def passes_filters(coin: dict, benchmark_30d: float) -> bool:
     return True
 
 
-def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[dict]:
+def build_lead(coin: Dict[str, Any], detail: Optional[Dict[str, Any]], benchmark: Dict[str, float]) -> Optional[Dict[str, Any]]:
     benchmark_30d = benchmark["benchmark_30d"]
     change_30d = coin.get("price_change_percentage_30d_in_currency") or 0
     change_7d  = coin.get("price_change_percentage_7d_in_currency") or 0
@@ -240,8 +248,8 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
 
     exchange_count = 3
     if detail and detail.get("tickers"):
-        exchanges = set(t.get("market", {}).get("name", "") for t in detail["tickers"])
-        exchange_count = len(exchanges)
+        exchanges = set(t.get("market", {}).get("name", "") for t in detail["tickers"] if t.get("market"))
+        exchange_count = len(exchanges) if exchanges else 3
 
     price_s    = score_price_distress(change_30d, benchmark_30d)
     volume_s   = score_volume_decay(volume_24h, market_cap)
@@ -254,25 +262,25 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
     if composite < 45:
         return None
 
-    opportunity = classify_opportunity(
-        {"volume_decay": volume_s, "price_distress": price_s,
-         "treasury_risk": treasury_s, "exchange_count": exchange_s},
-        coin
-    )
+    scores_dict = {
+        "price_distress": price_s, "volume_decay": volume_s,
+        "exchange_count": exchange_s, "social_activity": social_s, "treasury_risk": treasury_s
+    }
+    opportunity = classify_opportunity(scores_dict)
 
     distress_flags = []
-    if change_30d < -30 and benchmark_30d > 0:
-        distress_flags.append(f"DOWN {abs(change_30d):.0f}% while market UP {benchmark_30d:.0f}%")
+    if change_30d < -20 and benchmark_30d > 0:
+        distress_flags.append(f"Divergent Bleed: DOWN {abs(change_30d):.0f}% vs Strong Market")
     if volume_24h < 100_000:
-        distress_flags.append("CRITICAL volume ($<100K/day)")
+        distress_flags.append("CRITICAL Liquidity: Sub-$100K daily volume depth")
     elif volume_24h < 500_000:
-        distress_flags.append("LOW volume (<$500K/day)")
+        distress_flags.append("Low Volume Depth: Sub-$500K daily activity profile")
     if exchange_count <= 3:
-        distress_flags.append(f"ONLY {exchange_count} exchange(s)")
+        distress_flags.append(f"Venue Concentration: Only listed on {exchange_count} CEX/DEX")
     if treasury_s > 60:
-        distress_flags.append("TREASURY risk detected")
-    if change_7d < -15:
-        distress_flags.append(f"ACCELERATING decline ({change_7d:.0f}% 7d)")
+        distress_flags.append("High Treasury Pressure Pattern")
+    if change_7d < -10:
+        distress_flags.append(f"Accelerating Momentum Breakdown ({change_7d:.0f}% 7d)")
 
     community = (detail or {}).get("community_data", {}) or {}
     links_data = (detail or {}).get("links", {}) or {}
@@ -293,13 +301,7 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
         "market_cap": market_cap,
         "exchange_count": exchange_count,
         "composite_score": round(composite, 1),
-        "scores": {
-            "price_distress": round(price_s, 1),
-            "volume_decay": round(volume_s, 1),
-            "exchange_count": round(exchange_s, 1),
-            "social_activity": round(social_s, 1),
-            "treasury_risk": round(treasury_s, 1),
-        },
+        "scores": {k: round(v, 1) for k, v in scores_dict.items()},
         "distress_flags": distress_flags,
         "primary_service": opportunity["primary_service"],
         "outreach_angle": opportunity["angle"],
@@ -312,12 +314,13 @@ def build_lead(coin: dict, detail: Optional[dict], benchmark: dict) -> Optional[
     }
 
 
-# ─── TELEGRAM ALERT ──────────────────────────────────────────────────────────
+# ─── TELEGRAM COMMUNICATIONS DELIVERY LAYER ───────────────────────────────────
 
 def format_alert(lead: dict) -> str:
+    """Formats outbound diagnostic lead data into readable, structured copy blocks."""
     score = lead["composite_score"]
     urgency_bar = "🔴" if score >= 75 else "🟠" if score >= 60 else "🟡"
-    flags_str = "\n".join(f"  ⚠️ {f}" for f in lead["distress_flags"])
+    flags_str = "\n".join(f"  ⚠️ {escape_markdown(f)}" for f in lead["distress_flags"])
 
     score_breakdown = (
         f"  Price Distress:  {lead['scores']['price_distress']:.0f}/100\n"
@@ -329,41 +332,40 @@ def format_alert(lead: dict) -> str:
 
     contacts = []
     if lead.get("twitter"):
-        contacts.append(f"X: {lead['twitter']}")
+        contacts.append(f"X: {escape_markdown(lead['twitter'])}")
     if lead.get("telegram"):
-        contacts.append(f"TG: {lead['telegram']}")
+        contacts.append(f"TG: {escape_markdown(lead['telegram'])}")
     if lead.get("website"):
-        contacts.append(f"Web: {lead['website']}")
-    contacts_str = " | ".join(contacts) if contacts else "Not found"
+        contacts.append(f"Web: {escape_markdown(lead['website'])}")
+    contacts_str = " | ".join(contacts) if contacts else "None surfaced"
 
-    volume_fmt = f"${lead['volume_24h']:,.0f}"
-    mc_fmt = f"${lead['market_cap']:,.0f}"
-
+    # Using standard text backticks inside the f-string block to preserve clean layout rendering
     return f"""
-{urgency_bar} *NEW BD LEAD* — Confidence {score:.0f}/100
+{urgency_bar} *CRITICAL BD SIGNAL FOUND* — Score {score:.0f}/100
 
-*{lead['name']} (${lead['symbol']})*
-Rank #{lead['rank']} on CoinGecko
+*{escape_markdown(lead['name'])} (${escape_markdown(lead['symbol'])})*
+CoinGecko Structural Rank #{lead['rank']}
 
-📉 *Distress Signals:*
+📉 *Identified Market Anomalies:*
 {flags_str}
 
-📊 *Metrics:*
-  Vol 24h:   {volume_fmt}
-  Mkt Cap:   {mc_fmt}
-  7d Change: {lead['change_7d']:+.1f}%
-  30d Change:{lead['change_30d']:+.1f}%
-  Exchanges: {lead['exchange_count']}
-  Market 30d:{lead['benchmark_30d']:+.1f}% (benchmark)
+📊 *Capital Infrastructure Metrics:*
+  Vol 24h:   ${lead['volume_24h']:,.0f}
+  Mkt Cap:   ${lead['market_cap']:,.0f}
+  7d Delta:  {lead['change_7d']:+.1f}%
+  30d Delta: {lead['change_30d']:+.1f}%
+  Venues:    {lead['exchange_count']} Listed
+  Baseline:  {lead['benchmark_30d']:+.1f}% (Global Benchmark)
 
-🎯 *Primary Opportunity:* {lead['primary_service']}
-💬 *Outreach Angle:*
-_{lead['outreach_angle']}_
+🎯 *Target Framework Match:* {escape_markdown(lead['primary_service'])}
+💬 *Recommended Outreach Stance:*
+_{escape_markdown(lead['outreach_angle'])}_
 
-📡 *Score Breakdown:*
+📡 *Multi-Dimensional Scoring Core:*
 {score_breakdown}
 
-🔗 *Contact Points:*
+
+🔗 *Surfaced Outreach Anchors:*
 {contacts_str}
 
 🕐 _{lead['scanned_at'][:16].replace('T',' ')} UTC_
@@ -372,16 +374,15 @@ _{lead['outreach_angle']}_
 
 def send_telegram_alert(lead: dict) -> bool:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("Telegram credentials not set — printing to console")
+        log.warning("Telegram configuration markers missing — outputting direct logs")
         print(format_alert(lead))
         return True
     try:
-        msg = format_alert(lead)
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": msg,
+                "text": format_alert(lead),
                 "parse_mode": "Markdown",
                 "disable_web_page_preview": True,
             },
@@ -390,35 +391,34 @@ def send_telegram_alert(lead: dict) -> bool:
         r.raise_for_status()
         return True
     except Exception as e:
-        log.error(f"Telegram send failed: {e}")
+        log.error(f"Inbound alert routing failed for token context {lead['id']}: {e}")
         return False
 
 
-def send_summary_alert(leads: list[dict]) -> None:
+def send_summary_alert(leads: list) -> None:
     if not leads:
         return
-    lines = [f"📋 *DAILY SCAN SUMMARY — {len(leads)} leads found*\n"]
+    lines = [f"📋 *PRODUCTION LEAD DISCOVERY SUMMARY — {len(leads)} Targets Surfaced*\n"]
     for i, lead in enumerate(leads[:10], 1):
         score = lead["composite_score"]
         icon = "🔴" if score >= 75 else "🟠" if score >= 60 else "🟡"
         lines.append(
-            f"{i}. {icon} *{lead['name']}* (${lead['symbol']}) — "
-            f"Score: {score:.0f} | {lead['primary_service']}"
+            f"{i}. {icon} *{escape_markdown(lead['name'])}* (${escape_markdown(lead['symbol'])}) — "
+            f"Score: {score:.0f} | {escape_markdown(lead['primary_service'])}"
         )
-    msg = "\n".join(lines)
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": "\n".join(lines), "parse_mode": "Markdown"},
             timeout=10,
         )
     except Exception as e:
-        log.error(f"Summary send failed: {e}")
+        log.error(f"Summary framework delivery failed: {e}")
 
 
-# ─── DEDUPLICATION ───────────────────────────────────────────────────────────
+# ─── DATA PERSISTENCE & DEDUPLICATION ────────────────────────────────────────
 
-def load_seen_ids() -> set:
+def load_seen_ids() -> Set[str]:
     path = "data/seen_leads.json"
     if os.path.exists(path):
         try:
@@ -429,70 +429,65 @@ def load_seen_ids() -> set:
     return set()
 
 
-def save_seen_ids(seen: set) -> None:
+def save_seen_ids(seen: Set[str]) -> None:
     os.makedirs("data", exist_ok=True)
     with open("data/seen_leads.json", "w") as f:
         json.dump(list(seen), f)
 
 
-def save_leads_log(leads: list[dict]) -> None:
+def save_leads_log(leads: List[Dict[str, Any]]) -> None:
     os.makedirs("data", exist_ok=True)
     path = f"data/leads_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.json"
     with open(path, "w") as f:
         json.dump(leads, f, indent=2)
-    log.info(f"Saved {len(leads)} leads to {path}")
 
 
-# ─── MAIN SCAN LOOP ──────────────────────────────────────────────────────────
+# ─── EXECUTION TUNNEL ────────────────────────────────────────────────────────
 
 def run_scan(pages: int = 5, send_individual_alerts: bool = True):
-    log.info("=== Crypto BD Lead Scanner starting ===")
+    log.info("=== Crypto BD Lead Scanner Engine Initiated ===")
 
     benchmark = get_market_benchmark()
     seen_ids = load_seen_ids()
+    candidate_pool = []
     new_leads = []
-    total_scanned = 0
 
     for page in range(1, pages + 1):
-        log.info(f"Scanning page {page}/{pages}...")
+        log.info(f"Ingesting market page matrix {page}/{pages}...")
         coins = fetch_coin_page(page)
         
-        if page < pages:
-            time.sleep(12)  # Cooldown block to avoid Public HTTP 429 filters
-
-        if not coins:
-            log.warning(f"No data returned for page {page}, skipping.")
-            continue
-
         for coin in coins:
-            total_scanned += 1
-            try:
-                if not passes_filters(coin, benchmark["benchmark_30d"]):
-                    continue
+            if coin.get("id") and passes_filters(coin):
+                candidate_pool.append(coin)
+        
+        if page < pages:
+            time.sleep(6)
 
-                detail = fetch_coin_detail(coin["id"])
-                lead = build_lead(coin, detail, benchmark)
+    log.info(f"Filtration framework passed. Surfaced {len(candidate_pool)} candidate targets.")
 
-                if lead is None:
-                    continue
-
-                if lead["id"] in seen_ids:
-                    log.info(f"Skipping already-seen: {lead['name']}")
-                    continue
-
-                log.info(f"✅ LEAD: {lead['name']} — Score {lead['composite_score']}")
-                new_leads.append(lead)
-                seen_ids.add(lead["id"])
-
-                if send_individual_alerts:
-                    send_telegram_alert(lead)
-                    time.sleep(1.5)
-
-            except Exception as item_error:
-                log.error(f"Error processing item token {coin.get('id', 'unknown')}: {item_error}")
+    for coin in candidate_pool:
+        try:
+            if coin["id"] in seen_ids:
                 continue
 
-    log.info(f"Scan complete. {total_scanned} coins scanned. {len(new_leads)} new leads.")
+            detail = fetch_coin_detail(coin["id"])
+            lead = build_lead(coin, detail, benchmark)
+
+            if not lead:
+                continue
+
+            log.info(f"✅ HIGH SIGNAL DETECTED: {lead['name']} — Composite Vector Score: {lead['composite_score']}")
+            new_leads.append(lead)
+            seen_ids.add(lead["id"])
+
+            if send_individual_alerts:
+                send_telegram_alert(lead)
+
+        except Exception as item_error:
+            log.error(f"Execution failed on isolation token {coin.get('id')}: {item_error}")
+            continue
+
+    log.info(f"Scan cycles wrapped. Extracted {len(new_leads)} actionable leads.")
 
     if new_leads:
         save_leads_log(new_leads)
@@ -508,7 +503,7 @@ def run_scan(pages: int = 5, send_individual_alerts: bool = True):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", type=int, default=5, help="CoinGecko pages to scan")
-    parser.add_argument("--digest", action="store_true", help="Batch mode: send summary only")
+    parser.add_argument("--pages", type=int, default=5, help="Total CoinGecko endpoint index pages to traverse")
+    parser.add_argument("--digest", action="store_true", help="Toggle batch digest summary reporting layout")
     args = parser.parse_args()
     run_scan(pages=args.pages, send_individual_alerts=not args.digest)
